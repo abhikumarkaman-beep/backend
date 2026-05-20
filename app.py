@@ -379,4 +379,5 @@ if __name__ == '__main__':
     print(f"[WEBHOOK] http://localhost:5000/api/webhook/twilio")
     print(f"[LEADS] http://localhost:5000/api/leads")
     
-    app.run(debug=True, port=5000, threaded=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', debug=os.environ.get('FLASK_DEBUG') == '1', port=port, threaded=True)

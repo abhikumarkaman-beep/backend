@@ -7,7 +7,12 @@ def get_db():
     """Get database connection with row factory"""
     conn = sqlite3.connect(Config.DATABASE_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # Some non-interactive Windows launches cannot create/open WAL sidecar files.
+        # The app can still run safely for local demos with SQLite's default journal mode.
+        pass
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
