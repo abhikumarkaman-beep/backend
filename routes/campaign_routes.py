@@ -218,7 +218,7 @@ def stream_pipeline():
     syngenta_only = request.args.get('syngenta_only', 'false').lower() == 'true'
     
     def generate():
-        for event in campaign_service.run_pipeline_stream_fast(
+        for event in campaign_service.run_pipeline_stream(
             state=state, limit=limit, syngenta_only=syngenta_only
         ):
             yield f"data: {json.dumps(event)}\n\n"

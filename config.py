@@ -75,7 +75,6 @@ class Config:
     
     # Pipeline cache reuse window (hours) for re-runs
     PIPELINE_CACHE_HOURS = int(os.getenv('PIPELINE_CACHE_HOURS', '24'))
-    PIPELINE_MAX_WORKERS = int(os.getenv('PIPELINE_MAX_WORKERS', '8'))
     
     # Paths
     STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')

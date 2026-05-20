@@ -119,10 +119,7 @@ class FeedbackService:
     
     def _clean_phone(self, phone):
         """Normalize phone number format"""
-        digits = ''.join(ch for ch in str(phone) if ch.isdigit())
-        if len(digits) > 10 and digits.startswith('91'):
-            digits = digits[-10:]
-        return digits
+        return phone.replace('whatsapp:', '').replace('+91', '').replace('+', '').replace(' ', '').strip()
     
     def _hash_phone(self, phone):
         """Hash phone for privacy (don't store raw numbers)"""
