@@ -11,6 +11,8 @@ venv/
 
 # Local database and runtime output
 *.db
+*.db-*
+*.db-journal
 static/audio/
 static/posters/
 

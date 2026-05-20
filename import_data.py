@@ -5,15 +5,17 @@ import sqlite3
 import openpyxl
 import os
 import sys
+from config import Config
 
 sys.stdout.reconfigure(encoding='utf-8')
 
 # Paths
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # hackathon/
-DB_PATH = os.path.join(os.path.dirname(__file__), 'krishiconnect.db')
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DB_PATH = Config.DATABASE_PATH
 
-BOOK1_PATH = os.path.join(BASE_DIR, 'Book1_final.xlsx')
-DISEASE_MAP_PATH = os.path.join(BASE_DIR, 'disease_product_mapping.xlsx')
+BOOK1_PATH = os.path.join(DATA_DIR, 'Book1_final.xlsx')
+DISEASE_MAP_PATH = os.path.join(DATA_DIR, 'disease_product_mapping.xlsx')
 
 def import_districts_and_crops():
     """Import Book1_final.xlsx → districts + district_crops tables"""

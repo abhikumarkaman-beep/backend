@@ -2,9 +2,10 @@
 import csv
 import sqlite3
 import os
+from config import Config
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'krishiconnect.db')
-SYNGENTA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'syngenta')
+DB_PATH = Config.DATABASE_PATH
+SYNGENTA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'syngenta')
 
 
 def import_syngenta():
