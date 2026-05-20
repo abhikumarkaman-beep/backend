@@ -5,7 +5,7 @@ from config import Config
 
 def get_db():
     """Get database connection with row factory"""
-    conn = sqlite3.connect(Config.DATABASE_PATH)
+    conn = sqlite3.connect(Config.DATABASE_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -14,6 +14,7 @@ def get_db():
         # The app can still run safely for local demos with SQLite's default journal mode.
         pass
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 def init_db():

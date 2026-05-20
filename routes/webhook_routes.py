@@ -68,9 +68,13 @@ def simulate_webhook():
     
     JSON body: { "phone": "9812345678", "reply": "2" }
     """
-    data = request.json
-    phone = data.get('phone', '9999999999')
-    reply = str(data.get('reply', '1'))
+    data = request.get_json(silent=True) or {}
+    phone = ''.join(ch for ch in str(data.get('phone', '9999999999')) if ch.isdigit())
+    if len(phone) > 10 and phone.startswith('91'):
+        phone = phone[-10:]
+    if not phone:
+        phone = '9999999999'
+    reply = str(data.get('reply', '1')).strip() or '1'
     
     # Format as Twilio would
     from_number = f"whatsapp:+91{phone}"
@@ -79,6 +83,7 @@ def simulate_webhook():
     
     return jsonify({
         'status': 'processed',
+        'phone': phone,
         'feedback': result,
     })
 

@@ -3,6 +3,7 @@ import json
 import uuid
 import sqlite3
 import threading
+import concurrent.futures
 from datetime import datetime, timedelta
 from config import Config
 from database import get_db
@@ -404,6 +405,52 @@ class CampaignService:
             return result
         except Exception as e:
             return {'error': str(e)}
+
+    def _get_standard_districts(self, conn, state=None, limit=1000):
+        """Return active districts to scan. Season is used for prediction, not district selection."""
+        query = """
+            SELECT d.id, d.state, d.district, d.language, d.latitude, d.longitude
+            FROM districts d
+            WHERE d.is_active = 1
+        """
+        params = []
+        if state:
+            query += " AND d.state = ?"
+            params.append(state)
+        query += " ORDER BY d.state, d.district LIMIT ?"
+        params.append(int(limit))
+        return conn.execute(query, params).fetchall()
+
+    def _analyze_district_for_pipeline(self, district, season):
+        """Fetch weather and run ML prediction for one district in a worker thread."""
+        weather = self.weather_service.fetch_and_cache(
+            district['id'], district['latitude'], district['longitude']
+        )
+        weather_summary = weather.get('summary')
+        weather_forecast = weather.get('forecast', [])
+        latest = self._get_latest_prediction(district['id'])
+
+        if not weather_summary:
+            return {
+                'district': district,
+                'latest': latest,
+                'weather_summary': None,
+                'weather_forecast': [],
+                'predictions': [],
+                'cached': weather.get('cached', False),
+            }
+
+        predictions = self.predictor.predict_for_district(
+            district['id'], weather_summary, season=season
+        )
+        return {
+            'district': district,
+            'latest': latest,
+            'weather_summary': weather_summary,
+            'weather_forecast': weather_forecast,
+            'predictions': predictions or [],
+            'cached': weather.get('cached', False),
+        }
     
     def run_pipeline_stream(self, season=None, state=None, limit=1000, syngenta_only=False):
         """
@@ -612,6 +659,220 @@ class CampaignService:
         finally:
             CampaignService._pipeline_running = False
     
+    def run_pipeline_stream_fast(self, season=None, state=None, limit=1000, syngenta_only=False):
+        """
+        Faster streaming pipeline. Weather and prediction run in parallel; DB campaign writes stay sequential.
+        """
+        if CampaignService._pipeline_running:
+            yield {'type': 'error', 'message': 'Pipeline already running! Please wait.'}
+            return
+
+        CampaignService._pipeline_running = True
+
+        try:
+            if not season:
+                season = self.predictor._get_current_season()
+
+            batch_id = str(uuid.uuid4())[:8]
+            conn = get_db()
+            if syngenta_only:
+                districts = self._get_syngenta_districts(conn, season, state)
+            else:
+                districts = self._get_standard_districts(conn, state, limit)
+            district_list = [dict(d) for d in districts]
+            conn.close()
+
+            total = len(district_list)
+            healthy = 0
+            at_risk = 0
+            campaigns_created = 0
+            skipped_unchanged = 0
+            weather_cached = 0
+            weather_fetched = 0
+            progress = 0
+            max_workers = max(1, min(Config.PIPELINE_MAX_WORKERS, total or 1))
+
+            yield {
+                'type': 'init',
+                'total': total,
+                'season': season,
+                'state_filter': state or 'All India',
+                'batch_id': batch_id,
+                'mode': 'syngenta_real' if syngenta_only else 'standard',
+                'workers': max_workers,
+            }
+            yield {
+                'type': 'phase',
+                'phase': 'analyze',
+                'message': f'Processing {total} districts with {max_workers} parallel workers...',
+            }
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(self._analyze_district_for_pipeline, district, season): district
+                    for district in district_list
+                }
+
+                for future in concurrent.futures.as_completed(future_map):
+                    progress += 1
+                    district = future_map[future]
+                    try:
+                        analysis = future.result()
+                        district = analysis['district']
+                        latest = analysis['latest']
+                        weather_summary = analysis['weather_summary']
+                        weather_forecast = analysis['weather_forecast']
+                        predictions = analysis['predictions']
+                        if analysis.get('cached'):
+                            weather_cached += 1
+                        else:
+                            weather_fetched += 1
+                    except Exception as e:
+                        yield {
+                            'type': 'district', 'progress': progress, 'total': total,
+                            'data': {
+                                'district': district['district'],
+                                'state': district['state'],
+                                'status': 'error',
+                                'status_label': str(e),
+                                'color': 'gray',
+                            },
+                        }
+                        continue
+
+                    yield {
+                        'type': 'phase',
+                        'phase': 'district',
+                        'message': f'[{progress}/{total}] {district["district"]}, {district["state"]}...',
+                    }
+
+                    if not weather_summary:
+                        yield {
+                            'type': 'district', 'progress': progress, 'total': total,
+                            'data': {
+                                'district': district['district'],
+                                'state': district['state'],
+                                'status': 'no_data',
+                                'status_label': 'Weather Unavailable',
+                                'color': 'gray',
+                            },
+                        }
+                        continue
+
+                    full_weather = {**weather_summary, 'forecast': weather_forecast}
+
+                    if not predictions or predictions[0]['probability'] < 0.2:
+                        if latest and self._is_same_threat(latest, 'None', 'HEALTHY'):
+                            healthy += 1
+                            skipped_unchanged += 1
+                            entry = self._entry_from_stored(district, latest, ' -- No Change', syngenta_only)
+                            yield {'type': 'district', 'progress': progress, 'total': total, 'data': entry}
+                            continue
+
+                        healthy += 1
+                        try:
+                            hconn = get_db()
+                            hconn.execute("""
+                                INSERT INTO predictions
+                                (batch_id, district_id, crop, disease, probability, risk_level,
+                                 weather_summary, prediction_method, product_recommended, product_dosage)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                batch_id, district['id'], 'N/A', 'None', 0.0, 'HEALTHY',
+                                json.dumps(full_weather), 'pipeline', '', ''
+                            ))
+                            hconn.commit()
+                            hconn.close()
+                        except Exception:
+                            pass
+
+                        entry = {
+                            'district': district['district'],
+                            'state': district['state'],
+                            'status': 'healthy',
+                            'status_label': 'Crop Healthy -- No Risk Detected',
+                            'color': 'green',
+                            'weather': {
+                                'temp': weather_summary.get('avg_temp'),
+                                'humidity': weather_summary.get('avg_humidity'),
+                                'rainfall': weather_summary.get('total_rainfall'),
+                            },
+                        }
+                        if syngenta_only:
+                            entry['syngenta'] = self._get_syngenta_enrichment(
+                                district['district'], district['state'])
+                        yield {'type': 'district', 'progress': progress, 'total': total, 'data': entry}
+                        continue
+
+                    top = predictions[0]
+                    top['weather_summary'] = full_weather
+
+                    if latest and self._is_same_threat(latest, top['disease'], top['risk_level']):
+                        at_risk += 1
+                        skipped_unchanged += 1
+                        entry = self._entry_from_stored(district, latest, ' -- No Change', syngenta_only)
+                        if not entry.get('campaign_id') and not self._campaign_exists_for_disease(
+                            district['id'], top['disease']
+                        ):
+                            content = self.content_service.warm_pipeline_cache(top)
+                            camp = self._create_campaign_for_prediction(batch_id, latest['id'], top, content)
+                            if camp:
+                                campaigns_created += 1
+                                entry['campaign_id'] = camp['id']
+                        yield {'type': 'district', 'progress': progress, 'total': total, 'data': entry}
+                        continue
+
+                    prediction_id = self._save_prediction_only(batch_id, top)
+                    at_risk += 1
+
+                    campaign = None
+                    if not self._campaign_exists_for_disease(district['id'], top['disease']):
+                        content = self.content_service.warm_pipeline_cache(top)
+                        campaign = self._create_campaign_for_prediction(batch_id, prediction_id, top, content)
+
+                    entry = {
+                        'district': district['district'],
+                        'state': district['state'],
+                        'status': 'at_risk',
+                        'status_label': f'{top["disease"]} -- {top["risk_level"]}',
+                        'color': 'red' if top['risk_level'] == 'HIGH' else 'orange' if top['risk_level'] == 'MODERATE' else 'yellow',
+                        'crop': top['crop'],
+                        'disease': top['disease'],
+                        'risk_level': top['risk_level'],
+                        'probability': top['probability'],
+                        'product': top['product'],
+                        'weather': {
+                            'temp': weather_summary.get('avg_temp'),
+                            'humidity': weather_summary.get('avg_humidity'),
+                            'rainfall': weather_summary.get('total_rainfall'),
+                        },
+                    }
+                    if syngenta_only:
+                        entry['syngenta'] = self._get_syngenta_enrichment(
+                            district['district'], district['state'], top.get('product'))
+                    if campaign:
+                        campaigns_created += 1
+                        entry['campaign_id'] = campaign['id']
+                    yield {'type': 'district', 'progress': progress, 'total': total, 'data': entry}
+
+            yield {
+                'type': 'complete',
+                'summary': {
+                    'total': total,
+                    'healthy': healthy,
+                    'at_risk': at_risk,
+                    'campaigns_created': campaigns_created,
+                    'batch_id': batch_id,
+                    'season': season,
+                    'skipped_unchanged': skipped_unchanged,
+                    'weather_cached': weather_cached,
+                    'weather_fetched': weather_fetched,
+                    'workers': max_workers,
+                },
+            }
+        finally:
+            CampaignService._pipeline_running = False
+
     def _create_campaign(self, batch_id, prediction):
         """Create a campaign record with generated content"""
         
