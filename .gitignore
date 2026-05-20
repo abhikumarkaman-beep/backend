@@ -1,0 +1,25 @@
+# Environment and local config
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local database and runtime output
+*.db
+static/audio/
+static/posters/
+
+# Logs
+*.log
+*.err.log
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
