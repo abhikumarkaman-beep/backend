@@ -8,7 +8,7 @@ class Config:
     """Application configuration"""
     
     # Database
-    DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'krishiconnect.db')
+    DATABASE_PATH = os.getenv('DATABASE_PATH', os.path.join(os.path.dirname(__file__), 'krishiconnect.db'))
     
     # API Keys
     # Gemini: supports multiple keys for rotation (comma-separated in .env)

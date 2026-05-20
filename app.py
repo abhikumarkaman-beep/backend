@@ -28,6 +28,21 @@ app.register_blueprint(overview_bp)
 app.register_blueprint(inventory_bp)
 app.register_blueprint(webhook_bp)
 
+
+def prepare_database():
+    """Ensure Gunicorn/Render imports start with a usable SQLite schema."""
+    if not os.path.exists(Config.DATABASE_PATH):
+        init_db()
+    else:
+        try:
+            from database import migrate_db
+            migrate_db()
+        except Exception as exc:
+            print(f"[DB] Migration skipped: {exc}")
+
+
+prepare_database()
+
 # ═══════════════════════════════════════
 # HEALTH CHECK
 # ═══════════════════════════════════════
