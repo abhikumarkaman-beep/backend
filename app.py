@@ -363,6 +363,10 @@ def dashboard_stats():
 # ═══════════════════════════════════════
 # RUN
 # ═══════════════════════════════════════
+@app.route('/health')
+def health():
+    return 'OK', 200
+
 if __name__ == '__main__':
     # Initialize DB if not exists
     if not os.path.exists(Config.DATABASE_PATH):
